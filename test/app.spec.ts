@@ -7,6 +7,7 @@ const TriggerTypes = {
 
 const StepTypes = {
     Receiver: 'receiver',
+    Transformer: 'transformer',
 }
 
 export type Trigger = {
@@ -17,12 +18,19 @@ export type Trigger = {
 
 export type Step = {
     type: string,
+}
+
+export type Receiver = Step & {
     receiver: string,
 }
+export type Transformer = Step & {
+    transformer: (input: any) => any,
+}
+
 export type Flow = {
     name: string,
     trigger: Trigger,
-    steps: Step[],
+    steps: (Receiver | Transformer)[],
 }
 
 export interface EventReceiver {
@@ -45,7 +53,7 @@ class App {
         if(!result.success){
             return;
         }
-        let input = value;
+        let input: any = value;
         for(let ii = 0; ii < flow.steps.length; ii++){
             const step = flow.steps[ii];
             const func = this.createStepFunction(step);
@@ -66,11 +74,15 @@ class App {
 
     createStepFunction<R>(step: Step){
         if(step.type === StepTypes.Receiver){
-            const receiver = this.receivers.get(step.receiver);
+            const receiver = this.receivers.get((step as Receiver).receiver);
             return (value: R) => {
                 receiver?.receive(value);
                 return null;
             }
+        }
+        if(step.type === StepTypes.Transformer){
+            const { transformer } = (step as Transformer);
+            return (value: R) => transformer(value);
         }
     }
 
@@ -81,12 +93,14 @@ function createApp(): App{
     return new App();
 }
 
+function createFlow(flow: Flow): Flow{
+    return flow;
+}
+
 describe('automation', () => {
-
     context('app', () => {
-
-        it('should do something', () => {
-            const flow: Flow = {
+        it('should do receive data', async () => {
+            const flow = createFlow({
                 name: 'gsh',
                 trigger: {
                     type: TriggerTypes.Webhook,
@@ -101,8 +115,7 @@ describe('automation', () => {
                         receiver: 'testReceiver'
                     }
                 ]
-            }
-
+            });
             const testReceiver = {
                 state: null as unknown,
                 receive<R>(record: R): Promise<void> {
@@ -118,12 +131,53 @@ describe('automation', () => {
 
             const requestValue = { someState: 1 };
 
-            app.post('/gsh', requestValue);
+            await app.post('/gsh', requestValue);
 
             assert.deepEqual(testReceiver.state, requestValue)
-
         })
+        it('should receive and trasform data', async () => {
+            const flow = createFlow({
+                name: 'gsh',
+                trigger: {
+                    type: TriggerTypes.Webhook,
+                    slug: '/gsh',
+                    schema: z.object({
+                        someState: z.number(),
+                    }),
+                },
+                steps: [
+                    {
+                        type: StepTypes.Transformer,
+                        transformer: (input: { someState: number }) => {
+                            return {
+                                someState: 4
+                            }
+                        }
+                    },
+                    {
+                        type: StepTypes.Receiver,
+                        receiver: 'testReceiver'
+                    }
+                ]
+            });
+            const testReceiver = {
+                state: null as unknown,
+                receive<R>(record: R): Promise<void> {
+                    this.state = record
+                    console.log(record);
+                    return Promise.resolve();
+                }
+            }
 
+            const app = createApp();
+            app.addReceiver('testReceiver', testReceiver);
+            app.addFlow(flow);
+
+            const requestValue = { someState: 1 };
+
+            await app.post('/gsh', requestValue);
+
+            assert.deepEqual(testReceiver.state, { someState: 4 })
+        })
     })
-
 })
